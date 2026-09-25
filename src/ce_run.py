@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--out", default="work/ce")
     ap.add_argument("--base", default="intfloat/multilingual-e5-base")
     ap.add_argument("--lr", type=float, default=2e-5)
+    ap.add_argument("--epochs", type=int, default=1)
+    ap.add_argument("--eval-n", type=int, default=0, help="val band pairs used for monitoring (0 = none)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -58,10 +60,21 @@ def main():
     tr = pd.concat([hard, easy]).sample(frac=1, random_state=0)
     log(f"training pairs {len(tr):,} (hard {len(hard):,}, easy {len(easy):,}), positives {tr.label.mean():.1%}")
     model_dir = f"{args.out}/model"
-    if not os.path.exists(f"{model_dir}/config.json"):
+    eval_data = None
+    if args.eval_n:
+        ev = X[X.val & (X.p > LO) & (X.p < HI)].sample(args.eval_n, random_state=1)
+        eval_data = (txt.loc[ev.s1].tolist(), txt.loc[ev.cand].tolist(), ev.label.values)
+    if not os.path.exists(f"{model_dir}/config.json") and not os.path.exists(f"{model_dir}/best/config.json"):
         train(txt.loc[tr.s1].tolist(), txt.loc[tr.cand].tolist(), tr.label.values.astype(np.float32),
-              model_dir, log=log, base=args.base, lr=args.lr)
+              model_dir, log=log, base=args.base, lr=args.lr, epochs=args.epochs, eval_data=eval_data)
     log("trained")
+    if args.epochs > 1:  # score val with every epoch's weights; test with the best one
+        va = X[X.val & (X.p > LO) & (X.p < HI)]
+        for ep in range(1, args.epochs + 1):
+            ce = score(txt.loc[va.s1].tolist(), txt.loc[va.cand].tolist(), f"{model_dir}/epoch{ep}")
+            va.assign(ce=ce)[["s1", "cand", "label", "p", "ce"]].to_parquet(f"{args.out}/val_band_epoch{ep}.parquet")
+            log(f"scored val band with epoch {ep}")
+        model_dir = f"{model_dir}/best"
 
     va = X[X.val & (X.p > LO) & (X.p < HI)]
     va = va.assign(ce=score(txt.loc[va.s1].tolist(), txt.loc[va.cand].tolist(), model_dir))
