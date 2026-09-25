@@ -38,6 +38,31 @@ def _first_number(text):
     return (m.group().lstrip("0") or "0") if m else None
 
 
+# the phonetic folding in normalize can turn p->f, w->v etc.; fold both sides back
+_LETTER_FOLD = str.maketrans({"f": "p", "v": "w", "c": "k", "q": "k", "z": "s", "j": "k"})
+
+
+def _acronym(tokens):
+    return "".join(t[0] for t in tokens if t)
+
+
+def _acronym_match(n1_tokens, n2_compact):
+    """1 if one name is the initials of the other's core words (TP ~ Training Parents)."""
+    if not n1_tokens or len(n2_compact) < 2 or len(n1_tokens) < 2:
+        return 0.0
+    return float(_acronym(n1_tokens).translate(_LETTER_FOLD) == n2_compact.translate(_LETTER_FOLD))
+
+
+def _street(text):
+    """(first number, the next two alphabetic tokens) of an address, e.g. ('115', 'r francisco')."""
+    toks = text.split()
+    for i, t in enumerate(toks):
+        if t[:1].isdigit():
+            words = [w for w in toks[i + 1:i + 4] if w.isalpha()][:2]
+            return (t.lstrip("0") or "0"), " ".join(words)
+    return None, ""
+
+
 def _jacc(a, b):
     if not a and not b:
         return np.nan
@@ -45,7 +70,7 @@ def _jacc(a, b):
 
 
 def _pair_feats(args):
-    n1, n2, a1, a2, k1, k2 = args
+    n1, n2, a1, a2, k1, k2, b1, b2 = args
     c1, c2 = core_tokens(n1), core_tokens(n2)
     s1c, s2c = " ".join(c1), " ".join(c2)
     num1, num2 = _numbers(a1), _numbers(a2)
@@ -71,7 +96,30 @@ def _pair_feats(args):
         _first_num_eq(a1, a2),
         float(sum(len(t) for t in c1 if t not in set(c2))),
         float(sum(len(t) for t in c2 if t not in set(c1))),
+        # acronyms and trade names at the same street address
+        _acronym_feat(b1, b2),
+        *_street_feats(a1, a2),
     )
+
+
+_ACRO_STOP = {"and", "the", "of", "de", "des", "du", "la", "le", "les", "et", "pvt", "ltd", "private",
+               "limited", "inc", "llc", "llp", "corp", "co", "sa", "sas", "sarl", "eurl", "sasu", "sci"}
+
+
+def _acronym_feat(b1, b2):
+    """Acronym match on plain (non-phonetic) names; b1/b2 are fix_ocr(basic(name))."""
+    t1 = list(dict.fromkeys(t for t in b1.split() if t not in _ACRO_STOP))  # dedupe, keep order
+    t2 = list(dict.fromkeys(t for t in b2.split() if t not in _ACRO_STOP))
+    return max(_acronym_match(t1, "".join(t2)), _acronym_match(t2, "".join(t1)))
+
+
+def _street_feats(a1, a2):
+    (num1, st1), (num2, st2) = _street(a1), _street(a2)
+    if num1 is None or num2 is None:
+        return (np.nan, np.nan, np.nan)
+    same_num = float(num1 == num2)
+    st_ratio = fuzz.ratio(st1, st2) if (st1 and st2) else np.nan
+    return (same_num, st_ratio, same_num * (st_ratio if st_ratio == st_ratio else 0.0))
 
 
 def _first_num_eq(a1, a2):
@@ -89,15 +137,16 @@ PAIR_COLS = [
     "cand_addr_empty", "cand_core_len", "cand_name_len", "cand_addr_len",
     "n_lev", "core_lev", "num_only_cand", "num_only_s1", "first_num_eq",
     "core_unmatched_s1", "core_unmatched_cand",
+    "acronym", "street_num_eq", "street_name_ratio", "street_match",
 ]
 
 
 def string_features(pairs, rec, procs=None, chunksize=5000):
-    """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with nname, naddr, nskel."""
+    """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with nname, naddr, nskel, bname."""
     r1 = rec.loc[pairs.s1.values]
     r2 = rec.loc[pairs.cand.values]
     args = zip(r1.nname.values, r2.nname.values, r1.naddr.values, r2.naddr.values,
-               r1.nskel.values, r2.nskel.values)
+               r1.nskel.values, r2.nskel.values, r1.bname.values, r2.bname.values)
     with Pool(procs or os.cpu_count()) as p:
         out = p.map(_pair_feats, args, chunksize=chunksize)
     return pd.DataFrame(np.asarray(out, dtype=np.float32), columns=PAIR_COLS, index=pairs.index)

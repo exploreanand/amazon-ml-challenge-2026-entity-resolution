@@ -25,7 +25,7 @@ import pandas as pd
 import torch
 
 from .blocking import dense_topk_search, fit_tfidf, topk_search
-from .normalize import basic, name_skeleton, norm_addr, norm_name, skeleton
+from .normalize import basic, fix_ocr, name_skeleton, norm_addr, norm_name, skeleton
 
 PASSES = {  # name -> (field, ngram_range, k)
     "nameaddr": ("nameaddr", (3, 3), 2),
@@ -40,6 +40,10 @@ def _skel_addr(a):
     return skeleton(basic(a))
 
 
+def _plain_name(n):
+    return fix_ocr(basic(n))
+
+
 def _pmap(fn, values, procs=None):
     with Pool(procs or os.cpu_count()) as p:
         return p.map(fn, values, chunksize=20_000)
@@ -52,6 +56,7 @@ def prepare(df):
     df["naddr"] = _pmap(norm_addr, df.business_address.tolist())
     df["nskel"] = _pmap(name_skeleton, df.business_name.tolist())
     df["askel"] = _pmap(_skel_addr, df.business_address.tolist())
+    df["bname"] = _pmap(_plain_name, df.business_name.tolist())
     df["nameaddr"] = df.nname + " " + df.naddr
     df["skall"] = df.nskel + " " + df.askel
     df["e5text"] = ("query: " + df.business_name.map(html.unescape) + ", "

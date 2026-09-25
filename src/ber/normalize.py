@@ -107,8 +107,53 @@ def norm_name(text, use_phonetic=True):
     return phonetic(text) if use_phonetic else text
 
 
+# Street-type words and their abbreviations collapse to one canonical token, in
+# the languages seen in the data (English, Indian English, French). Applied to
+# every record the same way; "saint"/"street"/"st" all become "st" because the
+# abbreviation is ambiguous between them.
+_ADDR_CANON = {}
+for canon, variants in {
+    "st": ["st", "street", "str", "saint", "sainte", "ste"],
+    "rd": ["rd", "road"],
+    "av": ["av", "ave", "avenue", "aven"],
+    "bd": ["bd", "blvd", "boulevard", "boul", "bld"],
+    "dr": ["dr", "drive"],
+    "ln": ["ln", "lane"],
+    "ct": ["ct", "court"],
+    "hwy": ["hwy", "highway"],
+    "apt": ["apt", "apartment", "appartement", "appt"],
+    "fl": ["fl", "flr", "floor", "etage"],
+    "nr": ["nr", "near"],
+    "opp": ["opp", "opposite"],
+    "r": ["r", "rue"],
+    "allee": ["all", "allee", "al"],
+    "imp": ["imp", "impasse"],
+    "pl": ["pl", "place"],
+    "ch": ["ch", "chemin", "che"],
+    "rte": ["rte", "route"],
+    "qu": ["qu", "quai"],
+    "sq": ["sq", "square"],
+    "crs": ["crs", "cours"],
+    "fg": ["fg", "fbg", "faubourg"],
+}.items():
+    for v in variants:
+        _ADDR_CANON[v] = canon
+_NUMBER_WORDS = {"no", "n", "num", "numero", "nos"}  # "No. 14", "N° 14", "Nº 14"
+
+
+def canon_address(text):
+    """Canonicalise street-type words and drop number markers in a ``basic`` string."""
+    toks = text.split(" ")
+    out = []
+    for i, t in enumerate(toks):
+        if t in _NUMBER_WORDS and i + 1 < len(toks) and toks[i + 1][:1].isdigit():
+            continue
+        out.append(_ADDR_CANON.get(t, t))
+    return " ".join(out)
+
+
 def norm_addr(text, use_phonetic=True):
-    text = basic(text)
+    text = canon_address(basic(text))
     return phonetic(text) if use_phonetic else text
 
 
