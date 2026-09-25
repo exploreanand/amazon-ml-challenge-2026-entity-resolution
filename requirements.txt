@@ -1,0 +1,11 @@
+# Versions used for the reported run (Google Colab GPU runtime, Python 3.13, CUDA 12.8)
+numpy==2.1.3
+pandas==2.2.3
+pyarrow==23.0.1
+scikit-learn==1.6.1
+torch==2.11.0
+transformers==5.16.1
+sentence-transformers==5.7.0
+xgboost==3.4.1
+rapidfuzz==3.14.6
+indic_transliteration==2.3.82
