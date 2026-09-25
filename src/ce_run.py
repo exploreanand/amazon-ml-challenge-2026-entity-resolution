@@ -39,6 +39,8 @@ def main():
     ap.add_argument("--feat", default="work/v3")
     ap.add_argument("--probs", required=True)
     ap.add_argument("--out", default="work/ce")
+    ap.add_argument("--base", default="intfloat/multilingual-e5-base")
+    ap.add_argument("--lr", type=float, default=2e-5)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -58,7 +60,7 @@ def main():
     model_dir = f"{args.out}/model"
     if not os.path.exists(f"{model_dir}/config.json"):
         train(txt.loc[tr.s1].tolist(), txt.loc[tr.cand].tolist(), tr.label.values.astype(np.float32),
-              model_dir, log=log)
+              model_dir, log=log, base=args.base, lr=args.lr)
     log("trained")
 
     va = X[X.val & (X.p > LO) & (X.p < HI)]

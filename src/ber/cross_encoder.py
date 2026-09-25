@@ -43,9 +43,9 @@ def _collate(tok):
     return f
 
 
-def train(a, b, y, out_dir, epochs=1, batch=256, lr=2e-5, warmup=0.05, log=print):
-    tok = AutoTokenizer.from_pretrained(BASE)
-    model = AutoModelForSequenceClassification.from_pretrained(BASE, num_labels=1).cuda()
+def train(a, b, y, out_dir, epochs=1, batch=256, lr=2e-5, warmup=0.05, log=print, base=BASE):
+    tok = AutoTokenizer.from_pretrained(base)
+    model = AutoModelForSequenceClassification.from_pretrained(base, num_labels=1).cuda()
     dl = DataLoader(_Pairs(a, b, y), batch_size=batch, shuffle=True, num_workers=8,
                     collate_fn=_collate(tok), drop_last=True, persistent_workers=True)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
