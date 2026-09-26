@@ -20,15 +20,16 @@ from rapidfuzz.distance import JaroWinkler, Levenshtein
 from .normalize import basic, fix_ocr, norm_name
 
 # Generic words that say little about identity; removed for the "core" name.
-# Spelled the way norm_name outputs them (compagnie -> conpagnie, scop -> scof at the end).
+# Spelled the way norm_name outputs them (scop -> scof at the end of a name).
+# Societe, Compagnie/Cie, Etablissements/Ets and Association are NOT here: in the
+# data they are type words that true variants keep and decoys swap ("X Compagnie SAS").
 LEGAL = {
     "pvt", "fvt", "private", "frivate", "ltd", "limited", "lnt", "lt", "prvt", "pr", "l",
     "inc", "incorporated", "corp", "corporation", "co", "company", "llc", "lc", "llp", "lf",
     "plc", "gmbh", "sa", "sas", "sarl", "eurl", "sci", "and", "the", "of", "mr", "dba", "fka",
     "india", "services", "group",
     # French legal forms and linking words (v8)
-    "sasu", "ei", "cie", "conpagnie", "ets", "etablisement", "etablisements", "societe", "selarl",
-    "snc", "scop", "scof", "gie", "asociation",
+    "sasu", "ei", "selarl", "snc", "scop", "scof", "gie",
     "de", "du", "des", "la", "le", "les", "et",
 }
 _NUM = re.compile(r"\d+")
