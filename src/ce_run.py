@@ -45,6 +45,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--eval-n", type=int, default=0, help="val band pairs used for monitoring (0 = none)")
     ap.add_argument("--augment-fr", type=float, default=0.0, help="share of training pairs rewritten French-style (ber.augment_fr)")
+    ap.add_argument("--augment-fr-types", action="store_true", help="also map English type words to French ones")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -72,7 +73,7 @@ def main():
             rng = np.random.default_rng(0)
             idx = np.flatnonzero(rng.random(len(a)) < args.augment_fr)
             for i in idx:
-                a[i], b[i] = frenchify(a[i], b[i], rng)
+                a[i], b[i] = frenchify(a[i], b[i], rng, type_words=args.augment_fr_types)
             log(f"French-style rewrite of {len(idx):,} training pairs")
         train(a, b, tr.label.values.astype(np.float32),
               model_dir, log=log, base=args.base, lr=args.lr, epochs=args.epochs, eval_data=eval_data)

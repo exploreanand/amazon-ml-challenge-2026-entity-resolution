@@ -10,6 +10,8 @@ forms with the labels their English counterparts carry:
                 (SARL, SAS, SA, EURL, SASU, SCI, SNC), dotted where the original was
   suffixes      & Sons -> & Fils, Group -> Groupe, Associates -> Associes, ...
   words         and -> et, of -> de, India -> France (names only; addresses are kept)
+  type words    (type_words=True) School -> Ecole, Committee -> Comite, Pharmacy -> Pharmacie, ...
+                so that a decoy swapping "School" for "College" teaches "Ecole" vs "College"
 
 Only generic words are mapped (no lookup of real businesses or places).
 """
@@ -26,6 +28,18 @@ _WORDS = [(re.compile(rf"\b{a}\b", re.IGNORECASE), b) for a, b in (
     (r"holdings?", "Holding"), (r"group", "Groupe"), (r"development", "Développement"),
     (r"enterprises?", "Entreprises"), (r"and", "et"), (r"of", "de"), (r"india", "France"),
 )]
+_TYPES = [(re.compile(rf"\b(?:{a})\b", re.IGNORECASE), b) for a, b in (
+    (r"committee", "Comité"), (r"high\s+school", "Lycée"), (r"school", "École"), (r"college", "Collège"),
+    (r"academy", "Académie"), (r"pharmacy|chemists?", "Pharmacie"), (r"clinic", "Clinique"), (r"hospital", "Hôpital"),
+    (r"health", "Santé"), (r"care", "Soins"), (r"center|centre", "Centre"), (r"house|home", "Maison"),
+    (r"sports?", "Sportive"), (r"society", "Société"), (r"foundation", "Fondation"), (r"cultural|culture", "Culture"),
+    (r"theatre|theater", "Théâtre"), (r"music", "Musique"), (r"dance", "Danse"), (r"bakery", "Boulangerie"),
+    (r"hotel", "Hôtel"), (r"travels?", "Voyages"), (r"market", "Marché"), (r"stores?|shop", "Boutique"),
+    (r"motors|automotive|auto", "Automobile"), (r"works|workshop", "Ateliers"), (r"farms?", "Fermes"),
+    (r"agro|agricultural", "Agricole"), (r"dental", "Dentaire"), (r"medical", "Médical"), (r"traders|trading", "Commerce"),
+    (r"consulting|consultants?", "Conseil"), (r"jewell?ers?", "Bijouterie"), (r"events?", "Fêtes"), (r"leisure", "Loisirs"),
+    (r"friends", "Amis"), (r"kindergarten|nursery", "Maternelle"), (r"primary", "Primaire"), (r"elementary", "Élémentaire"),
+)]
 
 
 def _dotted(form):
@@ -40,7 +54,7 @@ def _legal(text, form, rng):
     return _LEGAL.sub(sub, text)
 
 
-def frenchify(a, b, rng):
+def frenchify(a, b, rng, type_words=False):
     """Rewrite the two record texts ("name | address") of one pair the same way."""
     form = _FR_FORMS[rng.integers(len(_FR_FORMS))]
     out = []
@@ -49,5 +63,8 @@ def frenchify(a, b, rng):
         name = _legal(name, form, rng)
         for pat, rep in _WORDS:
             name = pat.sub(rep, name)
+        if type_words:
+            for pat, rep in _TYPES:
+                name = pat.sub(rep, name)
         out.append(name + sep + addr)
     return out[0], out[1]
