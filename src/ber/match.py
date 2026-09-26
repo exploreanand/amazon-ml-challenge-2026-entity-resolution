@@ -46,6 +46,58 @@ def decide(X, prob, threshold):
     return d[["s1", "cand"]]
 
 
+def decide_expected_f(X, prob, beta=0.5, shift=0.0, max_k=15, max_rest=20, chunk=200_000):
+    """Per-S1 decisions that maximise expected F-beta (plug-in rule, Ye et al., ICML 2012).
+
+    Each S2/S3 record first goes to its highest-probability S1, as in ``decide``.
+    An S1 may then predict the top-k of the records it received, for the k with the
+    highest expected F-beta under independent pair probabilities (shifted by ``shift``
+    on the logit scale; > 0 is stricter). Its other pairs count only as possible
+    matches it cannot predict. k = 0 (a singleton) is worth the chance that none of
+    its pairs is a match. Returns DataFrame[s1, cand] like ``decide``.
+    """
+    p = np.clip(np.asarray(prob, dtype=np.float64), 1e-6, 1 - 1e-6)
+    d = X[["s1", "cand"]].assign(p=1 / (1 + np.exp(-(np.log(p / (1 - p)) - shift))))
+    d = d.sort_values("p", ascending=False, kind="stable")
+    own = ~d.cand.duplicated()
+    d["code"], s1s = pd.factorize(d.s1)
+    d["rank"] = -1
+    d.loc[own, "rank"] = d[own].groupby("code").cumcount().values
+    sel = own & (d["rank"] < max_k)
+    rest = d[~sel].copy()
+    rest["rank"] = rest.groupby("code").cumcount().values
+    rest = rest[rest["rank"] < max_rest]
+    n, b2, width = len(s1s), beta * beta, max_k + max_rest + 1
+    Q, R = np.zeros((n, max_k)), np.zeros((n, max_rest))
+    Q[d.code[sel].values, d["rank"][sel].values] = d.p[sel].values
+    R[rest.code.values, rest["rank"].values] = rest.p.values
+    a, b = np.arange(max_k + 1)[:, None], np.arange(width)[None, :]
+    best_k = np.zeros(n, dtype=np.int64)
+    for s in range(0, n, chunk):
+        q, r = Q[s:s + chunk], R[s:s + chunk]
+        m = len(q)
+        pa = np.zeros((max_k + 1, m, max_k + 1))  # pa[k]: distribution of true matches among the top k
+        pa[0, :, 0] = 1
+        for k in range(1, max_k + 1):
+            pa[k] = pa[k - 1] * (1 - q[:, k - 1:k])
+            pa[k, :, 1:] += pa[k - 1, :, :-1] * q[:, k - 1:k]
+        pb = np.zeros((m, width))  # distribution of true matches outside the top k (k = max_k first)
+        pb[:, 0] = 1
+        for j in range(max_rest):
+            pb[:, 1:] = pb[:, 1:] * (1 - r[:, j:j + 1]) + pb[:, :-1] * r[:, j:j + 1]
+            pb[:, 0] *= 1 - r[:, j]
+        ef = np.zeros((m, max_k + 1))
+        for k in range(max_k, 0, -1):
+            w = (1 + b2) * a / (b2 * (a + b) + k)
+            ef[:, k] = ((pa[k] @ w) * pb).sum(1)
+            pb[:, 1:] = pb[:, 1:] * (1 - q[:, k - 1:k]) + pb[:, :-1] * q[:, k - 1:k]
+            pb[:, 0] *= 1 - q[:, k - 1]
+        ef[:, 0] = pb[:, 0]
+        best_k[s:s + chunk] = ef.argmax(1)
+    keep = sel & (d["rank"] < best_k[d.code.values])
+    return d.loc[keep, ["s1", "cand"]]
+
+
 def to_output(pairs, s1_ids, col):
     """Predicted/candidate pairs -> submission frame with one row per S1 (empty = none)."""
     lists = pairs.groupby("s1").cand.agg(lambda c: ",".join(sorted(set(c))))

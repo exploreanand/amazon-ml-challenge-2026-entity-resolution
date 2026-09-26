@@ -124,8 +124,10 @@ def main():
     ca = np.zeros(len(vv), dtype=bool)
     ca[maybe] = country_added(vv[maybe], names(args.data, "train"), vv.s1[maybe].map(s1v.set_index("entity_id").country).values)
     report["val_country_added"] = int(ca.sum())
-    for name, pf in (("base", vv.bl.fillna(vv.p).values), ("veto", vv.hv.fillna(vv.bl).fillna(vv.p).values),
-                     ("veto_protected", pf_vp), ("veto_protected_country", np.where(ca, 0.0, pf_vp))):
+    variants = {"base": vv.bl.fillna(vv.p).values, "veto": vv.hv.fillna(vv.bl).fillna(vv.p).values,
+                "veto_protected": pf_vp, "veto_protected_country": np.where(ca, 0.0, pf_vp)}
+    vv[["s1", "cand"]].assign(label=val.label.values, **variants).to_parquet(f"{args.out}/val_final.parquet")
+    for name, pf in variants.items():
         report[f"val_{name}"] = {t: f05_macro(decide(vv, pf, t), truth, s1v.entity_id) for t in GRID}
         pred = decide(vv, pf, THRESHOLD)
         report[f"val_{name}_by_country"] = {c: f05_macro(pred, truth, g.entity_id) for c, g in s1v.groupby("country")}

@@ -14,6 +14,7 @@ import time
 import numpy as np
 import pandas as pd
 
+from ber.augment_fr import frenchify
 from ber.cross_encoder import record_text, score, train
 from ber.evaluate import true_pairs
 from ber.match import add_labels
@@ -43,6 +44,7 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--eval-n", type=int, default=0, help="val band pairs used for monitoring (0 = none)")
+    ap.add_argument("--augment-fr", type=float, default=0.0, help="share of training pairs rewritten French-style (ber.augment_fr)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -65,7 +67,14 @@ def main():
         ev = X[X.val & (X.p > LO) & (X.p < HI)].sample(args.eval_n, random_state=1)
         eval_data = (txt.loc[ev.s1].tolist(), txt.loc[ev.cand].tolist(), ev.label.values)
     if not os.path.exists(f"{model_dir}/config.json") and not os.path.exists(f"{model_dir}/best/config.json"):
-        train(txt.loc[tr.s1].tolist(), txt.loc[tr.cand].tolist(), tr.label.values.astype(np.float32),
+        a, b = txt.loc[tr.s1].tolist(), txt.loc[tr.cand].tolist()
+        if args.augment_fr:
+            rng = np.random.default_rng(0)
+            idx = np.flatnonzero(rng.random(len(a)) < args.augment_fr)
+            for i in idx:
+                a[i], b[i] = frenchify(a[i], b[i], rng)
+            log(f"French-style rewrite of {len(idx):,} training pairs")
+        train(a, b, tr.label.values.astype(np.float32),
               model_dir, log=log, base=args.base, lr=args.lr, epochs=args.epochs, eval_data=eval_data)
     log("trained")
     if args.epochs > 1:  # score val with every epoch's weights; test with the best one
