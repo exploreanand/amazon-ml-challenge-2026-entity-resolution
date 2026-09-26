@@ -11,9 +11,15 @@ scored too and blended with p capped at HI, so a clear "no" from the
 cross-encoder (below about 0.2) overrules XGBoost. The XGBoost model, the
 blender and the uncertain-band scores all come from --run; nothing is retrained.
 
-  1. validation (US + India): F0.5 with and without the veto, the blend
-     cross-fitted on two halves of the validation S1s exactly as in exp_v5;
-  2. test: the submission with the veto, and how many rows it changed.
+With --protect the veto is limited to pairs whose core names differ
+(ber.variants): on validation the cross-encoder's "no" is right 82% of the time
+there, but under half the time on spelling, legal-form or suffix variants,
+which are nearly always real matches.
+
+  1. validation (US + India): F0.5 without the veto, with it, and with the
+     protected veto; the blend cross-fitted on two halves of the validation
+     S1s exactly as in exp_v5;
+  2. test: the submission with the (protected) veto, and how many rows it changed.
 """
 
 import argparse
@@ -28,6 +34,9 @@ from sklearn.linear_model import LogisticRegression
 
 from ber.evaluate import f05_macro, true_pairs
 from ber.match import add_labels, decide, feature_names, to_output
+from ber.normalize import basic
+from ber.pipeline import _pmap
+from ber.variants import variant_kind
 from exp_v5 import GRID, HI, LO, THRESHOLD, ce_scores, load_split, log, texts, z
 from run_pipeline import is_val, load
 
@@ -42,6 +51,17 @@ def halves(s1):
     return (pd.util.hash_pandas_object(s1, index=False).values % 2) == 0
 
 
+def names(data, split):
+    return pd.concat([load(f"{data}/{split}/{split}_source{k}.tsv") for k in (1, 2, 3)]).set_index("entity_id").business_name
+
+
+def kinds(pairs, name):
+    """ber.variants.variant_kind of every pair in DataFrame[s1, cand]."""
+    ids = pd.unique(np.concatenate([pairs.s1.values, pairs.cand.values]))
+    b = pd.Series(_pmap(basic, name.reindex(ids).fillna("").tolist()), index=ids)
+    return np.array([variant_kind(x, y) for x, y in zip(b.reindex(pairs.s1).values, b.reindex(pairs.cand).values)])
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="dataset")
@@ -50,9 +70,10 @@ def main():
     ap.add_argument("--ce-model", required=True)
     ap.add_argument("--ce-cache", nargs="*", default=[], help="earlier output dirs scored with the same --ce-model")
     ap.add_argument("--out", default="output_v81")
+    ap.add_argument("--protect", action="store_true", help="veto only pairs whose core names differ (ber.variants)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    report = {"run": args.run, "cap": HI}
+    report = {"run": args.run, "cap": HI, "protect": args.protect}
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
     s1v = load(f"{args.data}/train/train_source1.tsv")[["entity_id", "country"]]
@@ -83,15 +104,20 @@ def main():
         m = LogisticRegression(max_iter=1000).fit(z(vb.p[hb == a], vb.ce[hb == a]), vb.label[hb == a])
         pb[hb != a] = m.predict_proba(z(vb.p[hb != a], vb.ce[hb != a]))[:, 1]
         ph[hh != a] = m.predict_proba(z(np.minimum(hi.p[hh != a], HI), hi.ce[hh != a]))[:, 1]
+    hk = kinds(hi, names(args.data, "train"))
+    report["val_high_kinds"] = pd.Series(hk).value_counts().to_dict()
     vv = val[["s1", "cand", "p"]].merge(vb[["s1", "cand"]].assign(bl=pb), on=["s1", "cand"], how="left")
-    vv = vv.merge(hi[["s1", "cand"]].assign(hv=ph), on=["s1", "cand"], how="left")
-    for name, pf in (("v8", vv.bl.fillna(vv.p).values), ("veto", vv.hv.fillna(vv.bl).fillna(vv.p).values)):
+    vv = vv.merge(hi[["s1", "cand"]].assign(hv=ph, hp=np.where(hk == "other", ph, hi.p)), on=["s1", "cand"], how="left")
+    for name, pf in (("base", vv.bl.fillna(vv.p).values), ("veto", vv.hv.fillna(vv.bl).fillna(vv.p).values),
+                     ("veto_protected", vv.hp.fillna(vv.bl).fillna(vv.p).values)):
         report[f"val_{name}"] = {t: f05_macro(decide(vv, pf, t), truth, s1v.entity_id) for t in GRID}
         pred = decide(vv, pf, THRESHOLD)
         report[f"val_{name}_by_country"] = {c: f05_macro(pred, truth, g.entity_id) for c, g in s1v.groupby("country")}
         log(f"val {name}: {report[f'val_{name}']} | at {THRESHOLD} by country {report[f'val_{name}_by_country']}")
     vetoed = ph < THRESHOLD
-    report["val_high"] = {"pairs": len(hi), "vetoed": int(vetoed.sum()), "vetoed_true": int((vetoed & (hi.label == 1)).sum())}
+    report["val_high"] = {"pairs": len(hi), "vetoed": int(vetoed.sum()), "vetoed_true": int((vetoed & (hi.label == 1)).sum()),
+                          "vetoed_protected": int((vetoed & (hk == "other")).sum()),
+                          "vetoed_protected_true": int((vetoed & (hk == "other") & (hi.label == 1)).sum())}
     log(f"val pairs with p >= {HI}: {report['val_high']}")
     del val, vv, txt
 
@@ -101,7 +127,12 @@ def main():
     ttxt = texts(args.data, "test")
     T.loc[high, "ce"] = ce_scores(T[high], ttxt, args.ce_model,
                                   cached(*[f"{d}/test_probs.parquet" for d in [args.run] + args.ce_cache]))
-    T.loc[high, "p_final"] = blender.predict_proba(z(np.minimum(T.p[high], HI), T.ce[high]))[:, 1]
+    veto = blender.predict_proba(z(np.minimum(T.p[high], HI), T.ce[high]))[:, 1]
+    if args.protect:
+        tk = kinds(T[high], names(args.data, "test"))
+        report["test_high_kinds"] = pd.Series(tk).value_counts().to_dict()
+        veto = np.where(tk == "other", veto, T.p[high].values)
+    T.loc[high, "p_final"] = veto
     T.to_parquet(f"{args.out}/test_probs.parquet")
     t1 = load(f"{args.data}/test/test_source1.tsv")
     country = T.s1.map(t1.set_index("entity_id").country)
