@@ -41,6 +41,9 @@ def main():
     ap.add_argument("--base", default="Qwen/Qwen3-1.7B")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--n-hard", type=int, default=N_HARD, help="0 = all hard pairs")
+    ap.add_argument("--n-easy", type=int, default=N_EASY)
+    ap.add_argument("--eval-every", type=int, default=2000)
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -53,8 +56,10 @@ def main():
     txt = texts_for(args.data, "train")
 
     tr = X[~X.val]
-    hard = tr[(tr.p > LO) & (tr.p < HI)].sample(N_HARD, random_state=0)
-    easy = tr[(tr.p <= LO) | (tr.p >= HI)].sample(N_EASY, random_state=0)
+    hard = tr[(tr.p > LO) & (tr.p < HI)]
+    if args.n_hard:
+        hard = hard.sample(args.n_hard, random_state=0)
+    easy = tr[(tr.p <= LO) | (tr.p >= HI)].sample(args.n_easy, random_state=0)
     tr = pd.concat([hard, easy]).sample(frac=1, random_state=0)
     log(f"training pairs {len(tr):,}, positives {tr.label.mean():.1%}")
 
@@ -62,7 +67,7 @@ def main():
     ev = vb.sample(20_000, random_state=1)
     if not os.path.exists(f"{args.out}/best/adapter_config.json"):
         train(txt.loc[tr.s1].tolist(), txt.loc[tr.cand].tolist(), tr.label.values.astype(np.float32),
-              args.out, args.base, epochs=args.epochs, batch=args.batch, log=log,
+              args.out, args.base, epochs=args.epochs, batch=args.batch, log=log, eval_every=args.eval_every,
               eval_data=(txt.loc[ev.s1].tolist(), txt.loc[ev.cand].tolist(), ev.label.values))
     log("trained")
 
