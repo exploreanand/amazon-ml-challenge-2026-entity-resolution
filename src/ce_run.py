@@ -37,7 +37,7 @@ def main():
     ap.add_argument("--data", default="dataset")
     ap.add_argument("--work", default="work")
     ap.add_argument("--feat", default="work/v3")
-    ap.add_argument("--probs", required=True)
+    ap.add_argument("--probs", help="test probabilities whose uncertain band is scored too (optional; exp_v5 scores its own)")
     ap.add_argument("--out", default="work/ce")
     ap.add_argument("--base", default="intfloat/multilingual-e5-base")
     ap.add_argument("--lr", type=float, default=2e-5)
@@ -47,8 +47,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
-    X = pd.concat([pd.read_parquet(f"{args.feat}/train_{c}_X.parquet", columns=["s1", "cand"])
-                   for c in ("India", "US")], ignore_index=True)  # same order as the saved OOF
+    X = pd.concat([pd.read_parquet(f"{args.feat}/{f}", columns=["s1", "cand"]) for f in sorted(os.listdir(args.feat))
+                   if f.startswith("train_") and f.endswith("_X.parquet")], ignore_index=True)  # exp_stack's OOF order
     X = add_labels(X, truth)
     X["p"] = np.load(f"{args.work}/v2/train_oof.npy")
     X["val"] = is_val(X.s1.values)
@@ -81,6 +81,9 @@ def main():
     va[["s1", "cand", "label", "p", "ce"]].to_parquet(f"{args.out}/val_band.parquet")
     log(f"scored {len(va):,} val band pairs")
 
+    if not args.probs:
+        log("DONE")
+        return
     T = pd.read_parquet(args.probs)
     tb = T[(T.p > LO) & (T.p < HI)]
     ttxt = texts_for(args.data, "test")

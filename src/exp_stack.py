@@ -3,6 +3,9 @@
     python src/exp_stack.py --data dataset --work work --exp work/v2
 
 Reuses the v1 feature tables in --work; writes everything new to --exp.
+With --oof-only it stops after the stage-1 out-of-fold probabilities
+(--exp/train_oof.npy), the only part the final pipeline uses: they pick the
+cross-encoder's training pairs (ce_run.py).
 """
 
 import argparse
@@ -46,6 +49,7 @@ def main():
     ap.add_argument("--data", default="dataset")
     ap.add_argument("--work", default="work")
     ap.add_argument("--exp", default="work/v2")
+    ap.add_argument("--oof-only", action="store_true", help="stop after writing train_oof.npy")
     args = ap.parse_args()
     os.makedirs(args.exp, exist_ok=True)
 
@@ -64,6 +68,8 @@ def main():
         oof = oof_predict(X, feats1, PARAMS, STAGE1_TREES, dmatrix)
         np.save(oof_path, oof)
     log("stage-1 out-of-fold done")
+    if args.oof_only:
+        return
 
     G = group_features(X.s1.values, X.cand.values, oof)
     log("group features done")

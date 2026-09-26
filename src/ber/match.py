@@ -17,14 +17,14 @@ RANK_COLS = [f"{c}_rank" for c in SCORE_COLS]
 EXTRA_COLS = ["bridge_sim", "bridge_nb_score"]  # present only for v5+ candidate tables
 
 
-def build_features(cands, s1, s23):
-    """cands: DataFrame[s1, cand, <pass>, <pass>_rank]; s1/s23: prepared records."""
+def build_features(cands, s1, s23, version="v8"):
+    """cands: DataFrame[s1, cand, <pass>, <pass>_rank]; s1/s23: prepared records; version: see string_features."""
     rec = pd.concat([s1, s23], ignore_index=True).set_index("entity_id")
     extra = [c for c in EXTRA_COLS if c in cands]
     X = cands[["s1", "cand"] + SCORE_COLS + RANK_COLS + extra].copy()
     X["cand_is_s3"] = X.cand.str.startswith("S3-").astype(np.float32)
     X["n_passes"] = X[RANK_COLS].notna().sum(axis=1).astype(np.float32)
-    X = X.join(string_features(X[["s1", "cand"]], rec))
+    X = X.join(string_features(X[["s1", "cand"]], rec, version=version))
     X = X.join(competition_features(X, SCORE_COLS + ["n_tset", "a_tset"]))
     return X
 

@@ -1,10 +1,12 @@
 """Rebuild pair features for existing candidate sets (no new blocking).
 
     python src/rebuild_features.py --data dataset --work work --out work/v3
+    python src/rebuild_features.py --data dataset --work work/v5 --out work/v7 --features v7
 
 Reads the blocking scores/ranks from --work/<split>_<country>_X.parquet,
 re-normalises the records with the current ber.normalize and writes new
-feature tables to --out with the same file names.
+feature tables to --out with the same file names. --features v7 gives the
+feature set of the v7 / v7.2 submissions (see ber.features.string_features).
 """
 
 import argparse
@@ -25,6 +27,7 @@ def main():
     ap.add_argument("--data", default="dataset")
     ap.add_argument("--work", default="work")
     ap.add_argument("--out", default="work/v3")
+    ap.add_argument("--features", choices=("v7", "v8"), default="v8")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     tags = sorted(f[:-len("_X.parquet")] for f in os.listdir(args.work) if f.endswith("_X.parquet"))
@@ -42,7 +45,7 @@ def main():
             c = pd.read_parquet(path, columns=["s1", "cand"] + SCORE_COLS + RANK_COLS + extra)
             p1 = prepare(s[1][s[1].country == country])
             p23 = prepare(pd.concat([s[k][s[k].country == country] for k in (2, 3)]))
-            X = build_features(c, p1, p23)
+            X = build_features(c, p1, p23, version=args.features)
             X.to_parquet(f"{args.out}/{tag}_X.parquet")
             print(f"{tag}: {len(X):,} pairs, {X.shape[1]} columns in {time.time() - t:.0f}s", flush=True)
 

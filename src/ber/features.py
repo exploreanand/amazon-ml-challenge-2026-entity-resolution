@@ -32,11 +32,13 @@ LEGAL = {
     "sasu", "ei", "selarl", "snc", "scop", "scof", "gie",
     "de", "du", "des", "la", "le", "les", "et",
 }
+# the v7 feature set (string_features(version="v7")) predates these
+_V8_LEGAL = {"sasu", "ei", "selarl", "snc", "scop", "scof", "gie", "de", "du", "des", "la", "le", "les", "et"}
 _NUM = re.compile(r"\d+")
 
 
-def core_tokens(norm_name):
-    return [t for t in norm_name.split() if t not in LEGAL]
+def core_tokens(norm_name, legal=LEGAL):
+    return [t for t in norm_name.split() if t not in legal]
 
 
 def without_country(texts, countries, spell):
@@ -221,17 +223,23 @@ def frequent_address_tokens(naddr, share=0.01):
     return frozenset(t for t in df.index[df.values > share * len(naddr)] if not t[:1].isdigit())
 
 
-def string_features(pairs, rec, procs=None, chunksize=5000):
+def string_features(pairs, rec, procs=None, chunksize=5000, version="v8"):
     """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with country, nname, naddr, nskel, bname.
 
     Core names (LEGAL words and the record's own country name removed) feed the
     core_* and swap features; the acronym feature reads bname without the country.
+    version="v7" gives the v7 feature set instead: v7 LEGAL, country word kept,
+    no swap features (the features behind the v7 / v7.2 submissions).
     """
     freq = frequent_address_tokens(rec.naddr.values)
-    core = [" ".join(core_tokens(n)) for n in without_country(rec.nname.values, rec.country.values, norm_name)]
-    rec = rec[["nname", "naddr", "nskel"]].assign(
-        core=core, bname=without_country(rec.bname.values, rec.country.values, lambda c: fix_ocr(basic(c))))
-    share = name_token_share(core)
+    if version == "v7":
+        core = [" ".join(core_tokens(n, LEGAL - _V8_LEGAL)) for n in rec.nname.values]
+        plain, share, cols = rec.bname.values, ({}, 0.0), PAIR_COLS[:-5]
+    else:
+        core = [" ".join(core_tokens(n)) for n in without_country(rec.nname.values, rec.country.values, norm_name)]
+        plain = without_country(rec.bname.values, rec.country.values, lambda c: fix_ocr(basic(c)))
+        share, cols = name_token_share(core), PAIR_COLS
+    rec = rec[["nname", "naddr", "nskel"]].assign(core=core, bname=plain)
     r1 = rec.loc[pairs.s1.values]
     r2 = rec.loc[pairs.cand.values]
     args = zip(r1.nname.values, r2.nname.values, r1.naddr.values, r2.naddr.values,
@@ -239,7 +247,7 @@ def string_features(pairs, rec, procs=None, chunksize=5000):
                r1.core.values, r2.core.values)
     with Pool(procs or os.cpu_count(), initializer=_init_freq, initargs=(freq, share)) as p:
         out = p.map(_pair_feats, args, chunksize=chunksize)
-    return pd.DataFrame(np.asarray(out, dtype=np.float32), columns=PAIR_COLS, index=pairs.index)
+    return pd.DataFrame(np.asarray(out, dtype=np.float32)[:, :len(cols)], columns=cols, index=pairs.index)
 
 
 def competition_features(df, score_cols):

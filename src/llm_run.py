@@ -48,8 +48,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
-    X = pd.concat([pd.read_parquet(f"{args.feat}/train_{c}_X.parquet", columns=["s1", "cand"])
-                   for c in ("India", "US")], ignore_index=True)  # same order as the saved OOF
+    X = pd.concat([pd.read_parquet(f"{args.feat}/{f}", columns=["s1", "cand"]) for f in sorted(os.listdir(args.feat))
+                   if f.startswith("train_") and f.endswith("_X.parquet")], ignore_index=True)  # exp_stack's OOF order
     X = add_labels(X, truth)
     X["p"] = np.load(f"{args.work}/v2/train_oof.npy")
     X["val"] = is_val(X.s1.values)
