@@ -50,7 +50,7 @@ def main():
     ap.add_argument("--v72s", default="output_v72s")
     ap.add_argument("--v72", default="output_v72")
     ap.add_argument("--v9", default="output_v9")
-    ap.add_argument("--v10", default="output_v10", help="v10a output, for the rows-changed report")
+    ap.add_argument("--v10", default="output_v10", help="v10a output, for the rows-changed report (optional)")
     ap.add_argument("--ce3", required=True)
     ap.add_argument("--combos", default="ce,ce2;ce2,ce3;ce,ce2,ce3")
     ap.add_argument("--out", default="output_v10b")
@@ -122,7 +122,9 @@ def main():
     ca_all = np.zeros(len(T), dtype=bool)
     ca_all[maybe_any] = country_added(T[maybe_any], rec.business_name, country[maybe_any])
     test_ids = load(f"{args.data}/test/test_source1.tsv").entity_id
-    prev = pd.read_csv(f"{args.v10}/matching_results.tsv", sep="\t", dtype=str, keep_default_na=False).set_index("source1_entity_id")
+    prev_path = f"{args.v10}/matching_results.tsv"
+    prev = (pd.read_csv(prev_path, sep="\t", dtype=str, keep_default_na=False).set_index("source1_entity_id")
+            if os.path.exists(prev_path) else None)
     for combo in combos:
         blender = LogisticRegression(max_iter=1000).fit(zmat(vb.p, [vb[c] for c in combo]), vb.label)
         pf = T.p.values.astype(np.float64).copy()
@@ -137,10 +139,11 @@ def main():
         to_output(T[["s1", "cand"]], test_ids, "candidate_entity_ids").to_csv(f"{d}/candidate_pairs.tsv", sep="\t", index=False)
         out = to_output(decide(T, pf, THRESHOLD), test_ids, "matched_entity_ids")
         out.to_csv(f"{d}/matching_results.tsv", sep="\t", index=False)
-        changed = out.matched_entity_ids.values != prev.matched_entity_ids.reindex(out.source1_entity_id).values
-        report[f"test_rows_changed_vs_v10a_{name}"] = pd.Series(changed).groupby(
-            rec.country.reindex(out.source1_entity_id).values).mean().to_dict()
-        log(f"[{name}] test rows changed vs v10a: {report[f'test_rows_changed_vs_v10a_{name}']}")
+        if prev is not None:
+            changed = out.matched_entity_ids.values != prev.matched_entity_ids.reindex(out.source1_entity_id).values
+            report[f"test_rows_changed_vs_v10a_{name}"] = pd.Series(changed).groupby(
+                rec.country.reindex(out.source1_entity_id).values).mean().to_dict()
+            log(f"[{name}] test rows changed vs v10a: {report[f'test_rows_changed_vs_v10a_{name}']}")
     json.dump(report, open(f"{args.out}/val_report.json", "w"), indent=2, default=float)
     log(f"wrote {args.out}")
 
