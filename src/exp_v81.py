@@ -73,7 +73,8 @@ def main():
     hi = val[(val.p >= HI) & ~val.set_index(["s1", "cand"]).index.isin(vb.set_index(["s1", "cand"]).index)]
     hi = hi.reset_index(drop=True)
     txt = texts(args.data, "train")
-    hi["ce"] = ce_scores(hi, txt, args.ce_model, cached(*[f"{d}/val_band.parquet" for d in args.ce_cache]))
+    hi["ce"] = ce_scores(hi, txt, args.ce_model, cached(*[f"{d}/{f}" for d in args.ce_cache
+                                                           for f in ("val_band.parquet", "val_high.parquet")]))
     hi.to_parquet(f"{args.out}/val_high.parquet")
 
     hb, hh = halves(vb.s1), halves(hi.s1)
