@@ -8,6 +8,8 @@ with the other candidates of the same S1 and the same S2/S3 record.
 
 import os
 import re
+from collections import Counter
+from itertools import chain
 from multiprocessing import Pool
 
 import numpy as np
@@ -15,18 +17,50 @@ import pandas as pd
 from rapidfuzz import fuzz
 from rapidfuzz.distance import JaroWinkler, Levenshtein
 
+from .normalize import basic, fix_ocr, norm_name
+
 # Generic words that say little about identity; removed for the "core" name.
+# Spelled the way norm_name outputs them (compagnie -> conpagnie, scop -> scof at the end).
 LEGAL = {
     "pvt", "fvt", "private", "frivate", "ltd", "limited", "lnt", "lt", "prvt", "pr", "l",
     "inc", "incorporated", "corp", "corporation", "co", "company", "llc", "lc", "llp", "lf",
     "plc", "gmbh", "sa", "sas", "sarl", "eurl", "sci", "and", "the", "of", "mr", "dba", "fka",
     "india", "services", "group",
+    # French legal forms and linking words (v8)
+    "sasu", "ei", "cie", "conpagnie", "ets", "etablisement", "etablisements", "societe", "selarl",
+    "snc", "scop", "scof", "gie", "asociation",
+    "de", "du", "des", "la", "le", "les", "et",
 }
 _NUM = re.compile(r"\d+")
 
 
 def core_tokens(norm_name):
     return [t for t in norm_name.split() if t not in LEGAL]
+
+
+def without_country(texts, countries, spell):
+    """Drop each record's own country name from its text ("marina ecole france" -> "marina ecole").
+
+    The word comes from the record's country label spelled by ``spell``, so an
+    unseen country gets the treatment "india" gets from LEGAL.
+    """
+    out = np.asarray(texts, dtype=object).copy()
+    countries = np.asarray(countries)
+    for c in pd.unique(countries):
+        phrase = spell(c)
+        if not phrase:
+            continue
+        pat = re.compile(rf"(?<!\S){re.escape(phrase)}(?!\S)")
+        m = countries == c
+        out[m] = [" ".join(pat.sub(" ", t).split()) for t in out[m]]
+    return out
+
+
+def name_token_share(cores, min_count=2):
+    """log10 share of records whose core name has each token; tokens seen fewer than min_count times get the default."""
+    df = Counter(chain.from_iterable(set(c.split()) for c in cores))
+    n = max(len(cores), 1)
+    return {t: float(np.log10(k / n)) for t, k in df.items() if k >= min_count}, float(np.log10(1 / n))
 
 
 def _numbers(text):
@@ -72,12 +106,15 @@ def _jacc(a, b):
 # Address tokens that are frequent in the partition (regions, departments, states,
 # big cities) are set by string_features; the "rare" address features ignore them,
 # so e.g. "Loire-Atlantique" vs "Pays de la Loire" does not count against a pair.
+# _SHARE / _SHARE_MIN: log10 share of the partition's records using each core-name token.
 _FREQ = frozenset()
+_SHARE, _SHARE_MIN = {}, 0.0
 
 
-def _init_freq(freq):
-    global _FREQ
+def _init_freq(freq, share=({}, 0.0)):
+    global _FREQ, _SHARE, _SHARE_MIN
     _FREQ = freq
+    _SHARE, _SHARE_MIN = share
 
 
 def _rare_feats(a1, a2):
@@ -90,10 +127,21 @@ def _rare_feats(a1, a2):
     return (_jacc(r1, r2), fuzz.token_set_ratio(" ".join(sorted(r1)), " ".join(sorted(r2))), float(len(r2 - r1)))
 
 
+def _swap_feats(c1, c2):
+    """How the core names differ: exactly one word swapped (Club -> Comite, or a typo), and how
+    common the differing words are in the partition (type words are common, typos rare)."""
+    d1, d2 = set(c1) - set(c2), set(c2) - set(c1)
+    if not (d1 or d2):
+        return (0.0, 0.0, np.nan, np.nan, np.nan)
+    shares = [_SHARE.get(t, _SHARE_MIN) for t in d1 | d2]
+    one = len(d1) == 1 and len(d2) == 1
+    sim = JaroWinkler.similarity(next(iter(d1)), next(iter(d2))) if one else np.nan
+    return (float(len(d1) + len(d2)), float(one), sim, min(shares), max(shares))
+
+
 def _pair_feats(args):
-    n1, n2, a1, a2, k1, k2, b1, b2 = args
-    c1, c2 = core_tokens(n1), core_tokens(n2)
-    s1c, s2c = " ".join(c1), " ".join(c2)
+    n1, n2, a1, a2, k1, k2, b1, b2, s1c, s2c = args
+    c1, c2 = s1c.split(), s2c.split()
     num1, num2 = _numbers(a1), _numbers(a2)
     t1, t2 = set(a1.split()), set(a2.split())
     return (
@@ -121,6 +169,7 @@ def _pair_feats(args):
         _acronym_feat(b1, b2),
         *_street_feats(a1, a2),
         *_rare_feats(a1, a2),
+        *_swap_feats(c1, c2),
     )
 
 
@@ -161,6 +210,7 @@ PAIR_COLS = [
     "core_unmatched_s1", "core_unmatched_cand",
     "acronym", "street_num_eq", "street_name_ratio", "street_match",
     "rare_a_jacc", "rare_a_tset", "rare_only_cand",
+    "core_symdiff", "swap_one", "swap_sim", "diff_share_min", "diff_share_max",
 ]
 
 
@@ -171,13 +221,22 @@ def frequent_address_tokens(naddr, share=0.01):
 
 
 def string_features(pairs, rec, procs=None, chunksize=5000):
-    """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with nname, naddr, nskel, bname."""
+    """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with country, nname, naddr, nskel, bname.
+
+    Core names (LEGAL words and the record's own country name removed) feed the
+    core_* and swap features; the acronym feature reads bname without the country.
+    """
     freq = frequent_address_tokens(rec.naddr.values)
+    core = [" ".join(core_tokens(n)) for n in without_country(rec.nname.values, rec.country.values, norm_name)]
+    rec = rec[["nname", "naddr", "nskel"]].assign(
+        core=core, bname=without_country(rec.bname.values, rec.country.values, lambda c: fix_ocr(basic(c))))
+    share = name_token_share(core)
     r1 = rec.loc[pairs.s1.values]
     r2 = rec.loc[pairs.cand.values]
     args = zip(r1.nname.values, r2.nname.values, r1.naddr.values, r2.naddr.values,
-               r1.nskel.values, r2.nskel.values, r1.bname.values, r2.bname.values)
-    with Pool(procs or os.cpu_count(), initializer=_init_freq, initargs=(freq,)) as p:
+               r1.nskel.values, r2.nskel.values, r1.bname.values, r2.bname.values,
+               r1.core.values, r2.core.values)
+    with Pool(procs or os.cpu_count(), initializer=_init_freq, initargs=(freq, share)) as p:
         out = p.map(_pair_feats, args, chunksize=chunksize)
     return pd.DataFrame(np.asarray(out, dtype=np.float32), columns=PAIR_COLS, index=pairs.index)
 

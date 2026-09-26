@@ -2,6 +2,10 @@
 
     python src/exp_v5.py --data dataset --feat work/v5 --ce-model work/ce_base_3ep/model/best --out output_v5
 
+--ce-cache DIR reuses the cross-encoder scores of an earlier run with the same
+--ce-model (DIR/val_band.parquet, DIR/test_probs.parquet); only pairs that are
+new to the uncertain band get scored.
+
   1. XGBoost, v3 recipe (18%-orphan training table, 2613 trees), training split only.
   2. Cross-encoder (given checkpoint) scores every val/test pair with XGBoost p in (LO, HI).
   3. Logistic blend fitted on validation; for the report it is cross-fitted on
@@ -53,19 +57,36 @@ def texts(data, split):
     return pd.Series(record_text(r.business_name, r.business_address), index=r.entity_id.values)
 
 
+def ce_scores(pairs, txt, model, cache=None):
+    """Cross-encoder scores for pairs[s1, cand]; pairs found in cache[s1, cand, ce] are not rescored."""
+    d = pairs[["s1", "cand"]].reset_index(drop=True)
+    d = d.merge(cache, on=["s1", "cand"], how="left") if cache is not None else d.assign(ce=np.nan)
+    miss = d.ce.isna().values
+    log(f"cross-encoder: {len(d) - miss.sum():,} pairs cached, scoring {miss.sum():,}")
+    if miss.any():
+        d.loc[miss, "ce"] = score(txt.loc[d.s1[miss]].tolist(), txt.loc[d.cand[miss]].tolist(), model)
+    return d.ce.values
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="dataset")
     ap.add_argument("--feat", default="work/v5")
     ap.add_argument("--ce-model", required=True)
     ap.add_argument("--out", default="output_v5")
+    ap.add_argument("--ce-cache", help="earlier output dir scored with the same --ce-model")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     report = {}
+    vcache = tcache = None
+    if args.ce_cache:
+        vcache = pd.read_parquet(f"{args.ce_cache}/val_band.parquet", columns=["s1", "cand", "ce"])
+        tcache = pd.read_parquet(f"{args.ce_cache}/test_probs.parquet", columns=["s1", "cand", "ce"]).dropna()
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
-    s1_all = load(f"{args.data}/train/train_source1.tsv").entity_id
-    val_ids = s1_all[is_val(s1_all.values)]
+    s1_all = load(f"{args.data}/train/train_source1.tsv")[["entity_id", "country"]]
+    s1_all = s1_all[is_val(s1_all.entity_id.values)]
+    val_ids = s1_all.entity_id
     full = add_labels(load_split(args.feat, "train"), truth)
     feats = feature_names(full)
     report["blocking_val"] = blocking_report(full[["s1", "cand"]], truth, val_ids)
@@ -82,7 +103,7 @@ def main():
 
     txt = texts(args.data, "train")
     vb = val[(val.p > LO) & (val.p < HI)][["s1", "cand", "label", "p"]].reset_index(drop=True)
-    vb["ce"] = score(txt.loc[vb.s1].tolist(), txt.loc[vb.cand].tolist(), args.ce_model)
+    vb["ce"] = ce_scores(vb, txt, args.ce_model, vcache)
     vb.to_parquet(f"{args.out}/val_band.parquet")
     half = (pd.util.hash_pandas_object(vb.s1, index=False).values % 2) == 0
     pb = np.zeros(len(vb))
@@ -92,6 +113,9 @@ def main():
     pf = vv.bl.fillna(vv.p).values
     report["val_xgb_ce"] = {t: f05_macro(decide(vv, pf, t), truth, val_ids) for t in GRID}
     log(f"val xgb + cross-encoder: {report['val_xgb_ce']}")
+    pred = decide(vv, pf, THRESHOLD)
+    report["val_xgb_ce_by_country"] = {c: f05_macro(pred, truth, g.entity_id) for c, g in s1_all.groupby("country")}
+    log(f"val xgb + cross-encoder at {THRESHOLD} by country: {report['val_xgb_ce_by_country']}")
     blender = LogisticRegression(max_iter=1000).fit(z(vb.p, vb.ce), vb.label)
     pickle.dump(blender, open(f"{args.out}/blender.pkl", "wb"))
     del val, vv, txt
@@ -103,7 +127,7 @@ def main():
     band = (out.p > LO) & (out.p < HI)
     ttxt = texts(args.data, "test")
     out["ce"] = np.nan
-    out.loc[band, "ce"] = score(ttxt.loc[out.s1[band]].tolist(), ttxt.loc[out.cand[band]].tolist(), args.ce_model)
+    out.loc[band, "ce"] = ce_scores(out[band], ttxt, args.ce_model, tcache)
     out["p_final"] = out.p.astype(np.float64)
     out.loc[band, "p_final"] = blender.predict_proba(z(out.p[band], out.ce[band]))[:, 1]
     out.to_parquet(f"{args.out}/test_probs.parquet")
@@ -112,7 +136,8 @@ def main():
         f"{args.out}/candidate_pairs.tsv", sep="\t", index=False)
     to_output(decide(out, out.p_final.values, THRESHOLD), test_ids, "matched_entity_ids").to_csv(
         f"{args.out}/matching_results.tsv", sep="\t", index=False)
-    report.update(threshold=THRESHOLD, ce_model=args.ce_model, test_pairs=len(out), test_band=int(band.sum()))
+    report.update(threshold=THRESHOLD, ce_model=args.ce_model, ce_cache=args.ce_cache,
+                  test_pairs=len(out), test_band=int(band.sum()))
     json.dump(report, open(f"{args.out}/val_report.json", "w"), indent=2, default=float)
     log(f"wrote {args.out}")
 
