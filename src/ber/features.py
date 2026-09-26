@@ -69,6 +69,27 @@ def _jacc(a, b):
     return len(a & b) / max(len(a | b), 1)
 
 
+# Address tokens that are frequent in the partition (regions, departments, states,
+# big cities) are set by string_features; the "rare" address features ignore them,
+# so e.g. "Loire-Atlantique" vs "Pays de la Loire" does not count against a pair.
+_FREQ = frozenset()
+
+
+def _init_freq(freq):
+    global _FREQ
+    _FREQ = freq
+
+
+def _rare_feats(a1, a2):
+    if not (a1 and a2):
+        return (np.nan, np.nan, np.nan)
+    r1 = {t for t in a1.split() if t not in _FREQ}
+    r2 = {t for t in a2.split() if t not in _FREQ}
+    if not r1 or not r2:
+        return (np.nan, np.nan, float(len(r2 - r1)))
+    return (_jacc(r1, r2), fuzz.token_set_ratio(" ".join(sorted(r1)), " ".join(sorted(r2))), float(len(r2 - r1)))
+
+
 def _pair_feats(args):
     n1, n2, a1, a2, k1, k2, b1, b2 = args
     c1, c2 = core_tokens(n1), core_tokens(n2)
@@ -99,6 +120,7 @@ def _pair_feats(args):
         # acronyms and trade names at the same street address
         _acronym_feat(b1, b2),
         *_street_feats(a1, a2),
+        *_rare_feats(a1, a2),
     )
 
 
@@ -138,16 +160,24 @@ PAIR_COLS = [
     "n_lev", "core_lev", "num_only_cand", "num_only_s1", "first_num_eq",
     "core_unmatched_s1", "core_unmatched_cand",
     "acronym", "street_num_eq", "street_name_ratio", "street_match",
+    "rare_a_jacc", "rare_a_tset", "rare_only_cand",
 ]
+
+
+def frequent_address_tokens(naddr, share=0.01):
+    """Non-numeric address tokens present in more than ``share`` of the partition's records."""
+    df = pd.Series([t for a in naddr for t in set(a.split())]).value_counts()
+    return frozenset(t for t in df.index[df.values > share * len(naddr)] if not t[:1].isdigit())
 
 
 def string_features(pairs, rec, procs=None, chunksize=5000):
     """pairs: DataFrame[s1, cand]; rec: records indexed by entity_id with nname, naddr, nskel, bname."""
+    freq = frequent_address_tokens(rec.naddr.values)
     r1 = rec.loc[pairs.s1.values]
     r2 = rec.loc[pairs.cand.values]
     args = zip(r1.nname.values, r2.nname.values, r1.naddr.values, r2.naddr.values,
                r1.nskel.values, r2.nskel.values, r1.bname.values, r2.bname.values)
-    with Pool(procs or os.cpu_count()) as p:
+    with Pool(procs or os.cpu_count(), initializer=_init_freq, initargs=(freq,)) as p:
         out = p.map(_pair_feats, args, chunksize=chunksize)
     return pd.DataFrame(np.asarray(out, dtype=np.float32), columns=PAIR_COLS, index=pairs.index)
 

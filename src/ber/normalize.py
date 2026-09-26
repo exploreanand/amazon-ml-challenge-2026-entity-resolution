@@ -135,18 +135,42 @@ for canon, variants in {
     "sq": ["sq", "square"],
     "crs": ["crs", "cours"],
     "fg": ["fg", "fbg", "faubourg"],
+    # more French street / building types (v7)
+    "pass": ["pass", "passage", "psg"],
+    "prom": ["prom", "promenade"],
+    "ham": ["ham", "hameau"],
+    "lot": ["lot", "lotissement", "lotiss"],
+    "res": ["res", "residence", "resid"],
+    "bat": ["bat", "batiment", "bt", "bldg", "building"],
+    "esc": ["esc", "escalier"],
+    "ld": ["ld", "lieudit"],
+    "mte": ["mte", "montee"],
+    "tra": ["tra", "trav", "traverse"],
+    "sen": ["sen", "sentier", "sente"],
+    "cite": ["cite", "cte"],
+    "vla": ["vla", "villa"],
+    "espl": ["espl", "esplanade"],
 }.items():
     for v in variants:
         _ADDR_CANON[v] = canon
 _NUMBER_WORDS = {"no", "n", "num", "numero", "nos"}  # "No. 14", "N° 14", "Nº 14"
+# mail-routing codes that say nothing about location: "CEDEX 9", "BP 123", "CS 456", "TSA 789"
+_MAIL_CODES = {"cedex", "bp", "cs", "tsa"}
 
 
 def canon_address(text):
-    """Canonicalise street-type words and drop number markers in a ``basic`` string."""
+    """Canonicalise street-type words, drop number markers and mail-routing codes in a ``basic`` string."""
     toks = text.split(" ")
-    out = []
+    out, skip = [], False
     for i, t in enumerate(toks):
-        if t in _NUMBER_WORDS and i + 1 < len(toks) and toks[i + 1][:1].isdigit():
+        if skip:
+            skip = False
+            continue
+        nxt_digit = i + 1 < len(toks) and toks[i + 1][:1].isdigit()
+        if t in _MAIL_CODES:
+            skip = nxt_digit  # drop the code and its number
+            continue
+        if t in _NUMBER_WORDS and nxt_digit:
             continue
         out.append(_ADDR_CANON.get(t, t))
     return " ".join(out)

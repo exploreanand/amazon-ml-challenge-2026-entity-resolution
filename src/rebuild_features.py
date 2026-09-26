@@ -13,7 +13,9 @@ import time
 
 import pandas as pd
 
-from ber.match import RANK_COLS, SCORE_COLS, build_features
+import pyarrow.parquet as pq
+
+from ber.match import EXTRA_COLS, RANK_COLS, SCORE_COLS, build_features
 from ber.pipeline import prepare
 from run_pipeline import load
 
@@ -35,7 +37,9 @@ def main():
                 s = {k: load(f"{args.data}/{split}/{split}_source{k}.tsv") for k in (1, 2, 3)}
             country = tag[len(split) + 1:]
             t = time.time()
-            c = pd.read_parquet(f"{args.work}/{tag}_X.parquet", columns=["s1", "cand"] + SCORE_COLS + RANK_COLS)
+            path = f"{args.work}/{tag}_X.parquet"
+            extra = [c for c in EXTRA_COLS if c in pq.read_schema(path).names]  # e.g. v5 bridge features
+            c = pd.read_parquet(path, columns=["s1", "cand"] + SCORE_COLS + RANK_COLS + extra)
             p1 = prepare(s[1][s[1].country == country])
             p23 = prepare(pd.concat([s[k][s[k].country == country] for k in (2, 3)]))
             X = build_features(c, p1, p23)
