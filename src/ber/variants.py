@@ -43,3 +43,13 @@ def variant_kind(b1, b2):
     if _SUFFIX.search(b2) and not _SUFFIX.search(b1):
         return "suffix_added"
     return "other"
+
+
+def adds_country(b1, b2, country):
+    """True if the S2/S3 name b2 carries the country word that the S1 name b1 lacks ("Toac Pharmacie" / "Toac France").
+
+    All arguments are ``basic``-normalised. On India validation not one of 84,907
+    such candidates is a true match: variants keep an S1's "(India)" but never add it.
+    """
+    c = f" {country} "
+    return c in f" {b2} " and c not in f" {b1} "

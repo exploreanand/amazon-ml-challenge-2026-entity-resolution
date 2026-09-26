@@ -14,7 +14,8 @@ blender and the uncertain-band scores all come from --run; nothing is retrained.
 With --protect the veto is limited to pairs whose core names differ
 (ber.variants): on validation the cross-encoder's "no" is right 82% of the time
 there, but under half the time on spelling, legal-form or suffix variants,
-which are nearly always real matches.
+which are nearly always real matches. With --country-rule a pair is also
+rejected when the S2/S3 name adds the record's country word (ber.variants).
 
   1. validation (US + India): F0.5 without the veto, with it, and with the
      protected veto; the blend cross-fitted on two halves of the validation
@@ -36,7 +37,7 @@ from ber.evaluate import f05_macro, true_pairs
 from ber.match import add_labels, decide, feature_names, to_output
 from ber.normalize import basic
 from ber.pipeline import _pmap
-from ber.variants import variant_kind
+from ber.variants import adds_country, variant_kind
 from exp_v5 import GRID, HI, LO, THRESHOLD, ce_scores, load_split, log, texts, z
 from run_pipeline import is_val, load
 
@@ -62,6 +63,15 @@ def kinds(pairs, name):
     return np.array([variant_kind(x, y) for x, y in zip(b.reindex(pairs.s1).values, b.reindex(pairs.cand).values)])
 
 
+def country_added(pairs, name, country):
+    """ber.variants.adds_country for every pair in DataFrame[s1, cand]; country: the S1's country label per pair."""
+    ids = pd.unique(np.concatenate([pairs.s1.values, pairs.cand.values]))
+    b = pd.Series(_pmap(basic, name.reindex(ids).fillna("").tolist()), index=ids)
+    word = {c: basic(c) for c in pd.unique(country)}
+    return np.array([adds_country(x, y, word[c]) for x, y, c in
+                     zip(b.reindex(pairs.s1).values, b.reindex(pairs.cand).values, country)], dtype=bool)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default="dataset")
@@ -71,9 +81,10 @@ def main():
     ap.add_argument("--ce-cache", nargs="*", default=[], help="earlier output dirs scored with the same --ce-model")
     ap.add_argument("--out", default="output_v81")
     ap.add_argument("--protect", action="store_true", help="veto only pairs whose core names differ (ber.variants)")
+    ap.add_argument("--country-rule", action="store_true", help="reject pairs whose S2/S3 name adds the country word")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
-    report = {"run": args.run, "cap": HI, "protect": args.protect}
+    report = {"run": args.run, "cap": HI, "protect": args.protect, "country_rule": args.country_rule}
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
     s1v = load(f"{args.data}/train/train_source1.tsv")[["entity_id", "country"]]
@@ -108,8 +119,13 @@ def main():
     report["val_high_kinds"] = pd.Series(hk).value_counts().to_dict()
     vv = val[["s1", "cand", "p"]].merge(vb[["s1", "cand"]].assign(bl=pb), on=["s1", "cand"], how="left")
     vv = vv.merge(hi[["s1", "cand"]].assign(hv=ph, hp=np.where(hk == "other", ph, hi.p)), on=["s1", "cand"], how="left")
+    pf_vp = vv.hp.fillna(vv.bl).fillna(vv.p).values
+    maybe = pf_vp >= 0.5  # only pairs that could still be accepted
+    ca = np.zeros(len(vv), dtype=bool)
+    ca[maybe] = country_added(vv[maybe], names(args.data, "train"), vv.s1[maybe].map(s1v.set_index("entity_id").country).values)
+    report["val_country_added"] = int(ca.sum())
     for name, pf in (("base", vv.bl.fillna(vv.p).values), ("veto", vv.hv.fillna(vv.bl).fillna(vv.p).values),
-                     ("veto_protected", vv.hp.fillna(vv.bl).fillna(vv.p).values)):
+                     ("veto_protected", pf_vp), ("veto_protected_country", np.where(ca, 0.0, pf_vp))):
         report[f"val_{name}"] = {t: f05_macro(decide(vv, pf, t), truth, s1v.entity_id) for t in GRID}
         pred = decide(vv, pf, THRESHOLD)
         report[f"val_{name}_by_country"] = {c: f05_macro(pred, truth, g.entity_id) for c, g in s1v.groupby("country")}
@@ -133,9 +149,16 @@ def main():
         report["test_high_kinds"] = pd.Series(tk).value_counts().to_dict()
         veto = np.where(tk == "other", veto, T.p[high].values)
     T.loc[high, "p_final"] = veto
-    T.to_parquet(f"{args.out}/test_probs.parquet")
     t1 = load(f"{args.data}/test/test_source1.tsv")
     country = T.s1.map(t1.set_index("entity_id").country)
+    if args.country_rule:
+        maybe = (T.p_final >= 0.5).values
+        ca = np.zeros(len(T), dtype=bool)
+        ca[maybe] = country_added(T[maybe], names(args.data, "test"), country[maybe].values)
+        report["test_country_added"] = pd.Series(country[ca].values).value_counts().to_dict()
+        log(f"test pairs whose S2/S3 name adds the country word: {report['test_country_added']}")
+        T.loc[ca, "p_final"] = 0.0
+    T.to_parquet(f"{args.out}/test_probs.parquet")
     report["test_high"] = {c: {"pairs": int(high[m].sum()), "vetoed": int((high & (T.p_final < THRESHOLD).values)[m].sum())}
                            for c in country.unique() for m in [(country == c).values]}
     log(f"test pairs with p >= {HI}: {report['test_high']}")
