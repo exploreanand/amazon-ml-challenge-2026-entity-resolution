@@ -54,12 +54,20 @@ def main():
     ap.add_argument("--ce3", required=True)
     ap.add_argument("--ce2-model", help="score ce2 with this model instead of reading the --v9 caches")
     ap.add_argument("--ce4", help="optional fourth cross-encoder (scored and cached like ce3)")
+    ap.add_argument("--threshold", type=float, default=THRESHOLD)
+    ap.add_argument("--thr-country", default="", help="per-country threshold overrides, e.g. France=0.9")
     ap.add_argument("--combos", default="ce,ce2;ce2,ce3;ce,ce2,ce3")
     ap.add_argument("--out", default="output_v10b")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     combos = [c.split(",") for c in args.combos.split(";")]
-    report = {"ce3": args.ce3}
+    thr = {k: float(v) for k, v in (x.split("=") for x in args.thr_country.split(",") if x)}
+    report = {"ce3": args.ce3, "threshold": args.threshold, "thr_country": thr}
+
+    def decide_c(pairs, p, country):
+        """decide() with a threshold per country (a record's candidates share its country)."""
+        return pd.concat([decide(pairs[country == c], p[country == c], thr.get(c, args.threshold))
+                          for c in pd.unique(country)])
 
     truth = true_pairs(load(f"{args.data}/train/train_ground_truth.tsv"))
     s1v = load(f"{args.data}/train/train_source1.tsv")[["entity_id", "country"]]
@@ -104,7 +112,7 @@ def main():
         ca[maybe] = country_added(vv[maybe], rec.business_name, country_v[maybe])
         pf = np.where(ca, 0.0, pf)
         pf = np.where(rule, np.maximum(pf, 0.99), pf)
-        pred = decide(vv, pf, THRESHOLD)
+        pred = decide_c(vv, pf, country_v)
         name = "+".join(combo)
         report[f"val_{name}"] = {"all": f05_macro(pred, truth, s1v.entity_id),
                                  **{c: f05_macro(pred, truth, g.entity_id) for c, g in s1v.groupby("country")}}
@@ -152,7 +160,7 @@ def main():
         d = f"{args.out}/{name}"
         os.makedirs(d, exist_ok=True)
         to_output(T[["s1", "cand"]], test_ids, "candidate_entity_ids").to_csv(f"{d}/candidate_pairs.tsv", sep="\t", index=False)
-        out = to_output(decide(T, pf, THRESHOLD), test_ids, "matched_entity_ids")
+        out = to_output(decide_c(T, pf, country), test_ids, "matched_entity_ids")
         out.to_csv(f"{d}/matching_results.tsv", sep="\t", index=False)
         if prev is not None:
             changed = out.matched_entity_ids.values != prev.matched_entity_ids.reindex(out.source1_entity_id).values
