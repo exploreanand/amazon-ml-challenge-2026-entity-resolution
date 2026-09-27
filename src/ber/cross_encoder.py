@@ -122,6 +122,10 @@ def _predict(model, tok, a, b, batch=1024):
 @torch.no_grad()
 def score(a, b, model_dir, batch=1024):
     """Match probability for each (a[i], b[i]); pairs are length-sorted for speed."""
+    import os
+    from . import qwen_rerank
+    if os.path.exists(f"{model_dir}/{qwen_rerank.MARKER}"):  # a Qwen3-Reranker checkpoint
+        return qwen_rerank.score(a, b, model_dir)
     tok = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSequenceClassification.from_pretrained(model_dir).cuda().eval()
     return _predict(model, tok, a, b, batch)

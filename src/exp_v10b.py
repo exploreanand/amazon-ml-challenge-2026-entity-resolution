@@ -52,6 +52,8 @@ def main():
     ap.add_argument("--v9", default="output_v9")
     ap.add_argument("--v10", default="output_v10", help="v10a output, for the rows-changed report (optional)")
     ap.add_argument("--ce3", required=True)
+    ap.add_argument("--ce2-model", help="score ce2 with this model instead of reading the --v9 caches")
+    ap.add_argument("--ce4", help="optional fourth cross-encoder (scored and cached like ce3)")
     ap.add_argument("--combos", default="ce,ce2;ce2,ce3;ce,ce2,ce3")
     ap.add_argument("--out", default="output_v10b")
     args = ap.parse_args()
@@ -65,13 +67,21 @@ def main():
     vb = pd.read_parquet(f"{args.v7}/val_band.parquet", columns=["s1", "cand", "label", "p", "ce"])
     vh = pd.read_parquet(f"{args.v72s}/val_high.parquet", columns=["s1", "cand", "label", "p", "ce"])
     V = pd.read_parquet(f"{args.v72s}/val_final.parquet", columns=["s1", "cand", "label", "base"])
-    vb["ce2"] = cached(vb, f"{args.v9}/val_band_ce2.parquet", "ce2")
-    vh["ce2"] = cached(vh, f"{args.v9}/val_high_ce2.parquet", "ce2")
     txt = texts(args.data, "train")
+    if args.ce2_model:
+        vb["ce2"] = ce2_scores(vb, txt, args.ce2_model, f"{args.out}/val_band_ce2.parquet")
+        vh["ce2"] = ce2_scores(vh, txt, args.ce2_model, f"{args.out}/val_high_ce2.parquet")
+    else:
+        vb["ce2"] = cached(vb, f"{args.v9}/val_band_ce2.parquet", "ce2")
+        vh["ce2"] = cached(vh, f"{args.v9}/val_high_ce2.parquet", "ce2")
     vb["ce3"] = ce2_scores(vb, txt, args.ce3, f"{args.out}/val_band_ce3.parquet")
     vh["ce3"] = ce2_scores(vh, txt, args.ce3, f"{args.out}/val_high_ce3.parquet")
+    if args.ce4:
+        vb["ce4"] = ce2_scores(vb, txt, args.ce4, f"{args.out}/val_band_ce4.parquet")
+        vh["ce4"] = ce2_scores(vh, txt, args.ce4, f"{args.out}/val_high_ce4.parquet")
     del txt
-    report["val_band_auc"] = {c: roc_auc_score(vb.label, vb[c]) for c in ("ce", "ce2", "ce3")}
+    ces = [c for c in ("ce", "ce2", "ce3", "ce4") if c in vb]
+    report["val_band_auc"] = {c: roc_auc_score(vb.label, vb[c]) for c in ces}
     log(f"uncertain validation pairs, AUC: {report['val_band_auc']}")
 
     rec = records(args.data, "train")
@@ -104,18 +114,23 @@ def main():
     rec = records(args.data, "test")
     T = pd.read_parquet(f"{args.v72}/test_probs.parquet", columns=["s1", "cand", "p", "ce"])
     has = T.ce.notna().values
-    T["ce2"] = np.nan
-    T.loc[has, "ce2"] = cached(T[has], f"{args.v9}/test_ce2.parquet", "ce2")
     ttxt = texts(args.data, "test")
-    T["ce3"] = np.nan
+    for c in ces[1:]:
+        T[c] = np.nan
+    if args.ce2_model:
+        T.loc[has, "ce2"] = ce2_scores(T[has], ttxt, args.ce2_model, f"{args.out}/test_ce2.parquet")
+    else:
+        T.loc[has, "ce2"] = cached(T[has], f"{args.v9}/test_ce2.parquet", "ce2")
     T.loc[has, "ce3"] = ce2_scores(T[has], ttxt, args.ce3, f"{args.out}/test_ce3.parquet")
+    if args.ce4:
+        T.loc[has, "ce4"] = ce2_scores(T[has], ttxt, args.ce4, f"{args.out}/test_ce4.parquet")
     del ttxt
     band, high = ((T.p > LO) & (T.p < HI)).values, (T.p >= HI).values
     tk = kinds(T[high], rec.business_name)
     country = T.s1.map(rec.country).values
     fr = country[high] == "France"
     report["france_sure_pairs_rejected"] = {k: {"pairs": int((fr & (tk == k)).sum()), **{
-        c: float((T[c][high].values[fr & (tk == k)] < 0.2).mean()) for c in ("ce", "ce2", "ce3")}} for k in pd.unique(tk)}
+        c: float((T[c][high].values[fr & (tk == k)] < 0.2).mean()) for c in ces}} for k in pd.unique(tk)}
     log(f"France, XGBoost-sure pairs rejected per cross-encoder: {report['france_sure_pairs_rejected']}")
     rule = unique_name_pairs(T, rec)
     maybe_any = (T.p > LO).values

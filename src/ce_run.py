@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from ber.augment_fr import frenchify
+from ber import qwen_rerank
 from ber.cross_encoder import record_text, score, train
 from ber.evaluate import true_pairs
 from ber.match import add_labels
@@ -46,6 +47,8 @@ def main():
     ap.add_argument("--eval-n", type=int, default=0, help="val band pairs used for monitoring (0 = none)")
     ap.add_argument("--augment-fr", type=float, default=0.0, help="share of training pairs rewritten French-style (ber.augment_fr)")
     ap.add_argument("--augment-fr-types", action="store_true", help="also map English type words to French ones")
+    ap.add_argument("--arch", choices=("encoder", "qwen"), default="encoder",
+                    help="encoder: sequence-classification cross-encoder; qwen: ber.qwen_rerank (Qwen3-Reranker)")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
@@ -75,7 +78,7 @@ def main():
             for i in idx:
                 a[i], b[i] = frenchify(a[i], b[i], rng, type_words=args.augment_fr_types)
             log(f"French-style rewrite of {len(idx):,} training pairs")
-        train(a, b, tr.label.values.astype(np.float32),
+        (qwen_rerank.train if args.arch == "qwen" else train)(a, b, tr.label.values.astype(np.float32),
               model_dir, log=log, base=args.base, lr=args.lr, epochs=args.epochs, eval_data=eval_data)
     log("trained")
     if args.epochs > 1:  # score val with every epoch's weights; test with the best one
@@ -84,6 +87,8 @@ def main():
             ce = score(txt.loc[va.s1].tolist(), txt.loc[va.cand].tolist(), f"{model_dir}/epoch{ep}")
             va.assign(ce=ce)[["s1", "cand", "label", "p", "ce"]].to_parquet(f"{args.out}/val_band_epoch{ep}.parquet")
             log(f"scored val band with epoch {ep}")
+        model_dir = f"{model_dir}/best"
+    elif args.arch == "qwen":
         model_dir = f"{model_dir}/best"
 
     va = X[X.val & (X.p > LO) & (X.p < HI)]
