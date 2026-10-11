@@ -11,7 +11,7 @@ Pipeline:
 6. **Decision:** each S2/S3 record keeps its best S1, with a cut-off of 0.85 for US and India and 0.90 for France.
 7. **Output files.**
 
-`Documentation_template.md` (next to `code/` in the submission package) explains the method and the evidence behind each step.
+[DOCUMENTATION.md](DOCUMENTATION.md) explains the method and the evidence behind each step.
 
 ## Setup
 
